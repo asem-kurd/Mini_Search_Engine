@@ -1,0 +1,3 @@
+
+Machine learning, a subset of artificial intelligence, enables systems to learn from data and improve their performance over time without explicit programming. This technology underpins many modern applications, such as spam filtering, facial recognition, and predictive maintenance. Machine learning models can be classified into supervised, unsupervised, and reinforcement learning. Despite its advancements, challenges like data bias and interpretability remain areas of active research, as they impact the fairness and transparency of machine learning systems.
+

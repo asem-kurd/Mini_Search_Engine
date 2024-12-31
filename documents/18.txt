@@ -1,0 +1,2 @@
+Software engineering applies engineering principles to the design, development, testing, and maintenance of software systems. It emphasizes creating reliable, scalable, and efficient solutions to meet user needs. Software engineering methodologies, like Agile and DevOps, focus on collaboration and iterative improvements, ensuring high-quality products that align with business goals.
+

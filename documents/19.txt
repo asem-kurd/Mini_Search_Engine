@@ -1,0 +1,2 @@
+Virtual Reality (VR) immerses users in a completely computer-generated environment, often using headsets, gloves, or other devices. Unlike AR, which enhances the real world, VR creates a new one altogether. It is widely used in gaming, training simulations, and therapy for conditions like PTSD. Recent advancements in VR technology focus on improving graphics, reducing latency, and making the experience more interactive and realistic.
+

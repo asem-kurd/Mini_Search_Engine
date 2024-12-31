@@ -1,0 +1,2 @@
+Computer networks enable multiple devices to connect and share resources, such as data, applications, and hardware. They range from small-scale local area networks (LANs) to large-scale wide area networks (WANs) like the internet. Networks are essential for communication and collaboration in modern businesses, but they require robust security measures to protect against unauthorized access and data breaches.
+
