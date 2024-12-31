@@ -4,16 +4,13 @@ from collections import defaultdict
 from typing import List, Dict, Tuple, Set
 from math import log10
 import time
-
-# NLP-related imports
+import jellyfish
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
-from nltk.metrics.distance import edit_distance
-import jellyfish
-import nltk
 
 # Download required NLTK data
+import nltk
 nltk.download('punkt')
 nltk.download('stopwords')
 
@@ -66,14 +63,6 @@ class MiniSearchEngine:
                         self.positions_index[token][filename].append(position)
                         self.inverted_index[token].add(filename)
 
-    def _calculate_tfidf(self, token: str, scores: Dict[str, float]) -> None:
-        """Calculate TF-IDF scores for a given token."""
-        if token in self.inverted_index:
-            idf = log10(len(self.documents) / len(self.inverted_index[token]))
-            for doc in self.inverted_index[token]:
-                tf = len(self.positions_index[token][doc]) / self.doc_lengths[doc]
-                scores[doc] += tf * idf
-
     def term_search(self, query: str) -> List[Tuple[str, float]]:
         """Retrieve documents containing the specified terms, with ranking based on TF-IDF."""
         tokens = self._preprocess_text(query)
@@ -115,6 +104,14 @@ class MiniSearchEngine:
         results = [(doc, score / self.doc_lengths[doc]) for doc, score in scores.items()]
         return sorted(results, key=lambda x: x[1], reverse=True)
 
+    def _calculate_tfidf(self, token: str, scores: Dict[str, float]) -> None:
+        """Calculate TF-IDF scores for a given token."""
+        if token in self.inverted_index:
+            idf = log10(len(self.documents) / len(self.inverted_index[token]))
+            for doc in self.inverted_index[token]:
+                tf = len(self.positions_index[token][doc]) / self.doc_lengths[doc]
+                scores[doc] += tf * idf
+
     def handle_character_loss(self, query_term: str, max_distance: int = 1) -> Set[str]:
         """
         Handle missing or incorrect characters in query terms using edit distance.
@@ -128,14 +125,14 @@ class MiniSearchEngine:
         """
         matches = set()
         for term in self.inverted_index.keys():
-            if edit_distance(query_term, term) <= max_distance:  # Allow for specified character differences
+            if jellyfish.distance(query_term, term) <= max_distance:  # Use jellyfish.distance instead
                 matches.add(term)
         return matches or {query_term}
 
     def handle_phonetics(self, query_term: str) -> Set[str]:
-        """Handle phonetic variations in query terms using Metaphone algorithm."""
-        query_metaphone = jellyfish.metaphone(query_term)
-        return {term for term in self.inverted_index.keys() if jellyfish.metaphone(term) == query_metaphone}
+        """Handle phonetic variations in query terms using Soundex algorithm."""
+        query_soundex = jellyfish.soundex(query_term)
+        return {term for term in self.inverted_index.keys() if jellyfish.soundex(term) == query_soundex}
 
     def evaluate(self, queries: List[str], relevant_docs: List[Set[str]]) -> Dict[str, float]:
         """Evaluate the search engine using standard IR metrics."""
@@ -166,38 +163,28 @@ class MiniSearchEngine:
         """Interactive command-line interface for the search engine."""
         print("\nWelcome to the Enhanced Mini Search Engine!")
         while True:
-            print("\nOptions:\n1. Term search\n2. Phrase search\n3. Exit")
-            choice = input("\nEnter your choice (1, 2, or 3): ").strip()
-            
-            if choice == '3':
+            query = input("\nEnter your search term or phrase (or type '0' to quit): ").strip()
+            if query == '0':
                 print("Thank you for using the search engine. Goodbye!")
                 break
             
-            if choice not in ['1', '2']:
-                print("Invalid choice. Please select 1, 2, or 3.")
-                continue
-            
-            query = input("\nEnter your search query: ").strip()
-            if not query:
-                print("Please provide a search query.")
-                continue
-            
             start_time = time.time()
-            results = self.term_search(query) if choice == '1' else self.search_phrase(query)
+            if len(query.split()) > 1:  # Treat as phrase search if more than one word
+                results = self.search_phrase(query)
+            else:
+                results = self.term_search(query)
+            
             search_time = time.time() - start_time
             
             if results:
                 print(f"\nFound {len(results)} results in {search_time:.4f} seconds:")
-                for rank, (doc, score) in enumerate(results[:10], 1):
+                for rank, (doc, score) in enumerate(results[:10], 1):  # Display top 10 results
                     print(f"{rank}. {doc} (Score: {score:.4f})")
                 
-                for token in self._preprocess_text(query):
-                    corrections = self.handle_character_loss(token, max_distance=2)
-                    phonetic_matches = self.handle_phonetics(token)
-                    if corrections or phonetic_matches:
-                        print(f"\nSuggestions for '{token}':")
-                        print("Character-based:", ", ".join(corrections))
-                        print("Phonetic-based:", ", ".join(phonetic_matches))
+                # Provide suggestions based on Soundex for phonetic issues
+                phonetic_matches = self.handle_phonetics(query)
+                if phonetic_matches:
+                    print(f"\nDid you mean: {', '.join(phonetic_matches)}?")
             else:
                 print(f"No results found (Search time: {search_time:.4f} seconds)")
 
