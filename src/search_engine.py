@@ -89,7 +89,6 @@ class MiniSearchEngine:
 
     def search_phrase(self, phrase: str) -> List[Tuple[str, float]]:
         """Perform OR-based retrieval using positional indexes for multiple terms."""
-        # Split the phrase into individual terms
         tokens = self._preprocess_text(phrase)
         if not tokens:
             return []
