@@ -1,3 +1,1 @@
-
-Cybersecurity is the practice of protecting digital assets, including systems, networks, and data, from cyberattacks and unauthorized access. With the increasing digitization of businesses and society, the risk of cyber threats like ransomware, phishing, and data breaches has grown. Cybersecurity measures include firewalls, encryption, multi-factor authentication, and regular vulnerability assessments. As cybercriminals evolve their tactics, organizations must adopt proactive approaches, such as threat intelligence and incident response planning, to stay secure.
-
+ASEM MOHAMMAD ZAID amz ZaId
