@@ -1,194 +1,139 @@
 import os
+import jellyfish
 import re
 from collections import defaultdict
-from typing import List, Dict, Tuple, Set
-from math import log10
-import time
-import jellyfish
-from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
-from nltk.stem import PorterStemmer
+from nltk.tokenize import word_tokenize
 
-# Download required NLTK data
+# Assuming nltk stopwords are downloaded
 import nltk
 nltk.download('punkt')
 nltk.download('stopwords')
 
-class MiniSearchEngine:
-    """
-    A mini search engine implementation that fulfills the requirements for the Information Retrieval course project.
-    Includes term-based retrieval, phrase-based retrieval, character loss handling, phonetics handling, and ranking.
-    """
+# Load stopwords
+stop_words = set(stopwords.words('english'))
+
+# Directory containing text files
+DOCUMENTS_DIR = "documents"
+
+# Function to preprocess documents
+def preprocess(document):
+    # Tokenization and normalization
+    tokens = word_tokenize(document.lower())
+    # Remove stop words and non-alphabetic tokens
+    return [word for word in tokens if word.isalpha() and word not in stop_words]
+
+# Function to load documents
+def load_documents():
+    documents = {}
+    for filename in os.listdir(DOCUMENTS_DIR):
+        if filename.endswith('.txt'):
+            with open(os.path.join(DOCUMENTS_DIR, filename), 'r', encoding='utf-8') as file:
+                documents[filename] = preprocess(file.read())
+    return documents
+
+# Search for terms using OR logic
+def search_terms(query, documents):
+    query_terms = set(preprocess(query))
+    results = defaultdict(int)
     
-    def __init__(self, folder_path: str):
-        """
-        Initialize the search engine with the path to the document folder.
-        
-        Args:
-            folder_path (str): Path to the folder containing the documents to be indexed
-        """
-        self.folder_path = folder_path
-        self.documents = {}
-        self.positions_index = defaultdict(lambda: defaultdict(list))
-        self.inverted_index = defaultdict(set)
-        self.doc_lengths = {}
-        
-        # Text processing tools
-        self.stop_words = set(stopwords.words('english'))
-        self.stemmer = PorterStemmer()
-        
-        # Initialize the search engine by preprocessing documents
-        self._preprocess_documents()
+    for filename, words in documents.items():
+        for term in query_terms:
+            if term in words:
+                results[filename] += 1  # Increment relevance score
 
-    def _preprocess_text(self, text: str) -> List[str]:
-        """Preprocess text by tokenizing, removing stopwords, and stemming."""
-        tokens = word_tokenize(text.lower())
-        return [
-            self.stemmer.stem(token)
-            for token in tokens
-            if token.isalnum() and token not in self.stop_words
-        ]
+    return sorted(results.items(), key=lambda x: x[1], reverse=True)
 
-    def _preprocess_documents(self):
-        """Preprocess all documents in the specified folder and build the necessary indices."""
-        for filename in os.listdir(self.folder_path):
-            if filename.endswith('.txt'):
-                with open(os.path.join(self.folder_path, filename), 'r', encoding='utf-8') as file:
-                    content = file.read()
-                    tokens = self._preprocess_text(content)
-                    self.documents[filename] = tokens
-                    self.doc_lengths[filename] = len(tokens)
-                    
-                    for position, token in enumerate(tokens):
-                        self.positions_index[token][filename].append(position)
-                        self.inverted_index[token].add(filename)
+# Search for phrases
+def search_phrases(phrase, documents):
+    phrase = phrase.lower()
+    results = defaultdict(int)
+    
+    for filename, words in documents.items():
+        if phrase in ' '.join(words):
+            results[filename] += 1  # Increment relevance score
 
-    def term_search(self, query: str) -> List[Tuple[str, float]]:
-        """Retrieve documents containing the specified terms, with ranking based on TF-IDF."""
-        tokens = self._preprocess_text(query)
-        scores = defaultdict(float)
+    return sorted(results.items(), key=lambda x: x[1], reverse=True)
 
-        for token in tokens:
-            matches = self.handle_character_loss(token, max_distance=2) | self.handle_phonetics(token)
-            for term in matches:
-                self._calculate_tfidf(term, scores)
+# Handle character loss (fuzzy search)
+def fuzzy_search(query, documents, threshold=2):
+    results = defaultdict(int)
+    
+    for filename, words in documents.items():
+        for word in words:
+            if jellyfish.levenshtein_distance(query, word) <= threshold:
+                results[filename] += 1  # Increment relevance score
 
-        results = [(doc, score / self.doc_lengths[doc]) for doc, score in scores.items()]
-        return sorted(results, key=lambda x: x[1], reverse=True)
+    return sorted(results.items(), key=lambda x: x[1], reverse=True)
 
-    def search_phrase(self, phrase: str) -> List[Tuple[str, float]]:
-        """Perform OR-based retrieval using positional indexes for multiple terms."""
-        tokens = self._preprocess_text(phrase)
-        if not tokens:
-            return []
+# Phonetics handling using Soundex
+def phonetic_search(query, documents):
+    query_soundex = jellyfish.soundex(query)
+    results = defaultdict(int)
+    
+    for filename, words in documents.items():
+        for word in words:
+            if jellyfish.soundex(word) == query_soundex:
+                results[filename] += 1  # Increment relevance score
 
-        # Using a set to collect documents that match any of the tokens
-        matching_docs = set()
+    return sorted(results.items(), key=lambda x: x[1], reverse=True)
 
-        # Iterate through each token and find matching documents
-        for token in tokens:
-            if token in self.inverted_index:
-                matching_docs.update(self.inverted_index[token])
+# Evaluation metrics
+def precision(retrieved, relevant):
+    return len(set(retrieved) & set(relevant)) / len(retrieved) if retrieved else 0
 
-        results = []
-        scores = defaultdict(float)
+def recall(retrieved, relevant):
+    return len(set(retrieved) & set(relevant)) / len(relevant) if relevant else 0
 
-        # Calculate scores for documents that matched any token
-        for doc in matching_docs:
-            for token in tokens:
-                if token in self.inverted_index and doc in self.inverted_index[token]:
-                    score = log10(len(self.documents) / len(self.inverted_index[token]))  # Basic score based on IDF
-                    scores[doc] += score
+def accuracy(total, correct):
+    return correct / total if total else 0
 
-        # Prepare results with scores for sorting
-        results = [(doc, score / self.doc_lengths[doc]) for doc, score in scores.items()]
-        return sorted(results, key=lambda x: x[1], reverse=True)
+def f1_score(precision, recall):
+    return 2 * (precision * recall) / (precision + recall) if (precision + recall) else 0
 
-    def _calculate_tfidf(self, token: str, scores: Dict[str, float]) -> None:
-        """Calculate TF-IDF scores for a given token."""
-        if token in self.inverted_index:
-            idf = log10(len(self.documents) / len(self.inverted_index[token]))
-            for doc in self.inverted_index[token]:
-                tf = len(self.positions_index[token][doc]) / self.doc_lengths[doc]
-                scores[doc] += tf * idf
+def main():
+    print("Welcome to the Enhanced Mini Search Engine!")
+    
+    # Load documents
+    documents = load_documents()
+    
+    # User input
+    user_query = input("Enter your search term or phrase: ")
 
-    def handle_character_loss(self, query_term: str, max_distance: int = 1) -> Set[str]:
-        """
-        Handle missing or incorrect characters in query terms using edit distance.
-        
-        Args:
-            query_term (str): Query term to process
-            max_distance (int): Maximum allowed edit distance for matching terms
-            
-        Returns:
-            Set[str]: Set of matching terms
-        """
-        matches = set()
-        for term in self.inverted_index.keys():
-            if jellyfish.distance(query_term, term) <= max_distance:  # Use jellyfish.distance instead
-                matches.add(term)
-        return matches or {query_term}
+    # Determine if it's a term or phrase search
+    if '"' in user_query:
+        # Phrase search
+        phrase = user_query.strip('"')
+        results = search_phrases(phrase, documents)
+    else:
+        # Term search
+        results = search_terms(user_query, documents)
 
-    def handle_phonetics(self, query_term: str) -> Set[str]:
-        """Handle phonetic variations in query terms using Soundex algorithm."""
-        query_soundex = jellyfish.soundex(query_term)
-        return {term for term in self.inverted_index.keys() if jellyfish.soundex(term) == query_soundex}
+    # Fuzzy search and phonetic search
+    fuzzy_results = fuzzy_search(user_query, documents)
+    phonetic_results = phonetic_search(user_query, documents)
 
-    def evaluate(self, queries: List[str], relevant_docs: List[Set[str]]) -> Dict[str, float]:
-        """Evaluate the search engine using standard IR metrics."""
-        total_metrics = defaultdict(float)
+    # Combine results
+    combined_results = sorted(set(results + fuzzy_results + phonetic_results), key=lambda x: x[1], reverse=True)
 
-        for query, relevant in zip(queries, relevant_docs):
-            results = self.term_search(query)
-            retrieved_docs = {doc for doc, _ in results}
+    # Display results
+    if combined_results:
+        print("\nSearch Results:")
+        for result in combined_results:
+            print(f"- {result[0]}: Relevance Score: {result[1]}")
+    else:
+        print("\nNo matches found.")
 
-            tp = len(relevant & retrieved_docs)
-            fp = len(retrieved_docs - relevant)
-            fn = len(relevant - retrieved_docs)
+    # Evaluation metrics (example, you can adjust the relevant set)
+    relevant_set = {'document1.txt', 'document2.txt'}  # Example relevant documents
+    retrieved_set = {result[0] for result in combined_results}
 
-            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-            recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-            f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-            accuracy = (tp + len(self.documents) - len(relevant) - len(retrieved_docs)) / len(self.documents)
+    p = precision(retrieved_set, relevant_set)
+    r = recall(retrieved_set, relevant_set)
+    a = accuracy(len(documents), len(retrieved_set))
+    f1 = f1_score(p, r)
 
-            total_metrics['precision'] += precision
-            total_metrics['recall'] += recall
-            total_metrics['f1_score'] += f1
-            total_metrics['accuracy'] += accuracy
-
-        n_queries = len(queries)
-        return {metric: value / n_queries for metric, value in total_metrics.items()}
-
-    def interactive_search(self):
-        """Interactive command-line interface for the search engine."""
-        print("\nWelcome to the Enhanced Mini Search Engine!")
-        while True:
-            query = input("\nEnter your search term or phrase (or type '0' to quit): ").strip()
-            if query == '0':
-                print("Thank you for using the search engine. Goodbye!")
-                break
-            
-            start_time = time.time()
-            if len(query.split()) > 1:  # Treat as phrase search if more than one word
-                results = self.search_phrase(query)
-            else:
-                results = self.term_search(query)
-            
-            search_time = time.time() - start_time
-            
-            if results:
-                print(f"\nFound {len(results)} results in {search_time:.4f} seconds:")
-                for rank, (doc, score) in enumerate(results[:10], 1):  # Display top 10 results
-                    print(f"{rank}. {doc} (Score: {score:.4f})")
-                
-                # Provide suggestions based on Soundex for phonetic issues
-                phonetic_matches = self.handle_phonetics(query)
-                if phonetic_matches:
-                    print(f"\nDid you mean: {', '.join(phonetic_matches)}?")
-            else:
-                print(f"No results found (Search time: {search_time:.4f} seconds)")
+    print(f"\nEvaluation Metrics:\nPrecision: {p:.2f}\nRecall: {r:.2f}\nAccuracy: {a:.2f}\nF1 Score: {f1:.2f}")
 
 if __name__ == "__main__":
-    folder_path = 'documents/'  # Ensure this folder contains your text documents
-    search_engine = MiniSearchEngine(folder_path)
-    search_engine.interactive_search()
+    main()
