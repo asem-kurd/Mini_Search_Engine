@@ -30,12 +30,35 @@ def clear_screen():
     """Clear the terminal screen."""
     os.system('cls' if os.name == 'nt' else 'clear')
 
-def correct_spelling(query: str) -> str:
-    """Correct spelling errors in the query using SymSpell."""
-    if sym_spell is None:
-        return query
-    suggestions = sym_spell.lookup_compound(query, max_edit_distance=2)
-    return suggestions[0].term if suggestions else query
+def correct_spelling(query: str, inverted_index: Dict[str, Set[str]]) -> Tuple[str, str]:
+    """
+    Correct spelling errors in the query using SymSpell and document vocabulary.
+    Returns the corrected query and the closest matching word from the document collection.
+    """
+    # Use SymSpell for initial correction
+    if sym_spell is not None:
+        suggestions = sym_spell.lookup_compound(query, max_edit_distance=2)
+        if suggestions:
+            corrected_query = suggestions[0].term
+        else:
+            corrected_query = query
+    else:
+        corrected_query = query
+
+    # Find the closest matching word from the document vocabulary
+    closest_word = None
+    max_similarity = 0
+    for word in inverted_index.keys():
+        similarity = SequenceMatcher(None, query.lower(), word.lower()).ratio()
+        if similarity > max_similarity:
+            max_similarity = similarity
+            closest_word = word
+
+    # If the closest word is significantly similar, suggest it
+    if closest_word and max_similarity >= 0.6:  # Adjust threshold as needed
+        return corrected_query, closest_word
+    else:
+        return corrected_query, None
 
 def improved_soundex(token: str) -> str:
     """
@@ -170,51 +193,61 @@ class MiniSearchEngine:
         matching_docs = set.union(*[self.inverted_index[token] for token in matching_tokens])
         return matching_docs
 
-    def search(self, query: str) -> Tuple[Set[str], Dict[str, float], List[str]]:
+    def search(self, query: str) -> Tuple[Set[str], Dict[str, float], List[str], Set[str]]:
         """Perform search for exact phrase, AND logic, OR logic, NOT logic, or wildcard search."""
-        # Correct spelling
-        corrected_query = correct_spelling(query)
-        if corrected_query != query:
-            print(f"Did you mean: {corrected_query}?")
-
-        # Handle wildcard search
-        if '*' in query:
-            matching_docs = self.wildcard_search(query)
-            query_tokens = [query]
         # Handle exact phrase search (words in exact order)
-        elif query.startswith('"') and query.endswith('"'):
-            query = query[1:-1].lower()
-            query_tokens = self._preprocess_text(query)
+        if query.startswith('"') and query.endswith('"'):
+            query = query[1:-1]  # Remove quotes and preserve case
+            query_tokens = [query]
             matching_docs = set()
             for doc_id, content in self.documents.items():
-                # Check if the exact phrase exists in the document
-                if query in content.lower():
+                # Check if the exact phrase exists in the document (case-sensitive)
+                if query in content:
                     matching_docs.add(doc_id)
-        # Handle AND logic search (words in any order but all must exist)
         else:
-            query_tokens = self._preprocess_text(query)
-            print(f"Query Tokens: {query_tokens}")  # Debug: Print query tokens
-            # Get the sets of documents for each token
-            doc_sets = [self.inverted_index[token] for token in query_tokens if token in self.inverted_index]
-            # Perform intersection only if there are sets to intersect
-            if doc_sets:
-                matching_docs = set.intersection(*doc_sets)
+            # Correct spelling and find the closest matching word for non-exact phrase searches
+            corrected_query, closest_word = correct_spelling(query, self.inverted_index)
+            if corrected_query != query:
+                if closest_word:
+                    print(f"Did you mean: {closest_word}?")
+                else:
+                    print(f"Did you mean: {corrected_query}?")
+            query = corrected_query
+
+            # Handle wildcard search
+            if '*' in query:
+                matching_docs = self.wildcard_search(query)
+                query_tokens = [query]
+            # Handle AND logic search (words in any order but all must exist)
             else:
-                # Fallback to Soundex-based matching if no exact matches are found
-                soundex_codes = [improved_soundex(token) for token in query_tokens]
-                print(f"Query Soundex Codes: {soundex_codes}")  # Debug: Print query Soundex codes
-                soundex_docs = set.union(*[
-                    fuzzy_soundex_match(code, self.soundex_index, similarity_threshold=0.8) for code in soundex_codes
-                ])
-                print(f"Soundex Matches: {soundex_docs}")  # Debug: Print Soundex matches
-                # Filter documents to ensure they contain at least one of the query tokens
-                matching_docs = soundex_docs  # Remove strict token filtering
+                query_tokens = self._preprocess_text(query)
+                print(f"Query Tokens: {query_tokens}")  # Debug: Print query tokens
+                # Get the sets of documents for each token
+                doc_sets = [self.inverted_index[token] for token in query_tokens if token in self.inverted_index]
+                # Perform intersection only if there are sets to intersect
+                if doc_sets:
+                    matching_docs = set.intersection(*doc_sets)
+                else:
+                    # Fallback to Soundex-based matching if no exact matches are found
+                    soundex_codes = [improved_soundex(token) for token in query_tokens]
+                    print(f"Query Soundex Codes: {soundex_codes}")  # Debug: Print query Soundex codes
+                    soundex_docs = set.union(*[
+                        fuzzy_soundex_match(code, self.soundex_index, similarity_threshold=0.8) for code in soundex_codes
+                    ])
+                    print(f"Soundex Matches: {soundex_docs}")  # Debug: Print Soundex matches
+                    # Filter documents to ensure they contain at least one of the query tokens
+                    matching_docs = soundex_docs  # Remove strict token filtering
+
+        # Define ground truth relevant documents based on query tokens
+        relevant_docs = set()
+        for token in query_tokens:
+            relevant_docs.update(self.inverted_index.get(token, set()))
 
         relevance_scores = {
             doc_id: self.calculate_relevance_score(doc_id, query_tokens)
             for doc_id in matching_docs
         }
-        return matching_docs, relevance_scores, query_tokens
+        return matching_docs, relevance_scores, query_tokens, relevant_docs
 
     def calculate_relevance_score(self, doc_id: str, query_tokens: List[str]) -> float:
         """Calculate relevance score for a document given query tokens using BM25 and Soundex similarity."""
@@ -254,17 +287,31 @@ class MiniSearchEngine:
         return score
 
     def evaluate_metrics(self, retrieved_docs: Set[str], relevant_docs: Set[str]) -> Dict[str, float]:
-        """Calculate precision, recall, accuracy, and F1-score."""
+        """Calculate precision, recall, accuracy, and F1-score based on ground truth relevant documents."""
+        # True Positives: Retrieved documents that are relevant
         true_positives = len(retrieved_docs & relevant_docs)
+        
+        # False Positives: Retrieved documents that are not relevant
         false_positives = len(retrieved_docs - relevant_docs)
+        
+        # False Negatives: Relevant documents that were not retrieved
         false_negatives = len(relevant_docs - retrieved_docs)
+        
+        # True Negatives: Documents that are not relevant and were not retrieved
         true_negatives = len(self.documents) - (true_positives + false_positives + false_negatives)
-
+        
+        # Precision: Proportion of retrieved documents that are relevant
         precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
+        
+        # Recall: Proportion of relevant documents that are retrieved
         recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+        
+        # Accuracy: Proportion of correct predictions (both relevant and non-relevant)
         accuracy = (true_positives + true_negatives) / len(self.documents)
+        
+        # F1-Score: Harmonic mean of precision and recall
         f1_score = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-
+        
         return {
             "Precision": precision,
             "Recall": recall,
@@ -292,8 +339,7 @@ class MiniSearchEngine:
                 print("Exiting...")
                 break
 
-            matching_docs, relevance_scores, query_tokens = self.search(query)
-            relevant_docs = set(self.documents.keys())  # Assume all documents are relevant for simplicity
+            matching_docs, relevance_scores, query_tokens, relevant_docs = self.search(query)
 
             print("\nSearch Results:")
             if matching_docs:
