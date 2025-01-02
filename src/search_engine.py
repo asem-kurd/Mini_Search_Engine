@@ -2,40 +2,45 @@ import os
 import re
 from collections import defaultdict
 from typing import List, Dict, Tuple, Set
-from math import log10, sqrt
-import time
+from math import log10
 import nltk
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
-from nltk.stem import PorterStemmer
+from nltk.stem import WordNetLemmatizer
+from symspellpy import SymSpell, Verbosity
+from difflib import SequenceMatcher
 
 # Download required NLTK data
 nltk.download('punkt')
 nltk.download('stopwords')
+nltk.download('wordnet')
+
+# Initialize SymSpell for spell correction
+sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
+dictionary_path = "frequency_dictionary_en_82_765.txt"  # Path to the dictionary file
+sym_spell.load_dictionary(dictionary_path, term_index=0, count_index=1)
 
 def clear_screen():
     """Clear the terminal screen."""
     os.system('cls' if os.name == 'nt' else 'clear')
 
+def correct_spelling(query: str) -> str:
+    """Correct spelling errors in the query using SymSpell."""
+    suggestions = sym_spell.lookup_compound(query, max_edit_distance=2)
+    return suggestions[0].term if suggestions else query
+
 def improved_soundex(token: str) -> str:
     """
-    Improved Soundex implementation that better handles misspellings and repeated letters.
+    Improved Soundex implementation that preserves the first letter and handles misspellings.
     """
     if not token:
         return "0000"
 
-    # Remove repeated characters first
-    cleaned = token[0]
-    for char in token[1:]:
-        if char != cleaned[-1]:
-            cleaned += char
-
     # Convert to uppercase
-    token = cleaned.upper()
+    token = token.upper()
 
-    # Enhanced Soundex mapping
+    # Soundex mapping
     soundex_mapping = {
-        'A': '0', 'E': '0', 'I': '0', 'O': '0', 'U': '0', 'H': '0', 'W': '0', 'Y': '0',
         'B': '1', 'F': '1', 'P': '1', 'V': '1',
         'C': '2', 'G': '2', 'J': '2', 'K': '2', 'Q': '2', 'S': '2', 'X': '2', 'Z': '2',
         'D': '3', 'T': '3',
@@ -44,20 +49,33 @@ def improved_soundex(token: str) -> str:
         'R': '6'
     }
 
-    # Keep first letter
-    result = token[0]
+    # Keep the first letter
+    soundex_code = token[0]
 
     # Convert remaining letters
     for char in token[1:]:
         if char in soundex_mapping:
             code = soundex_mapping[char]
-            if code != '0' and (not result or code != result[-1]):
-                result += code
+            # Avoid adding the same code consecutively
+            if code != soundex_code[-1]:
+                soundex_code += code
 
-    # Pad with zeros
-    result = result + '0' * 4
+    # Remove vowels and other non-mapped characters
+    soundex_code = soundex_code[0] + ''.join([c for c in soundex_code[1:] if c in '0123456789'])
 
-    return result[:4]
+    # Pad with zeros and truncate to 4 characters
+    soundex_code = soundex_code.ljust(4, '0')[:4]
+
+    return soundex_code
+
+def fuzzy_soundex_match(query_soundex: str, soundex_index: Dict[str, Set[str]], similarity_threshold: float = 0.8) -> Set[str]:
+    """Find documents with Soundex codes similar to the query's Soundex code using difflib."""
+    matching_docs = set()
+    for soundex_code in soundex_index:
+        similarity = SequenceMatcher(None, query_soundex, soundex_code).ratio()
+        if similarity >= similarity_threshold:
+            matching_docs.update(soundex_index[soundex_code])
+    return matching_docs
 
 class MiniSearchEngine:
     def __init__(self):
@@ -92,22 +110,29 @@ class MiniSearchEngine:
         self.doc_lengths = {}
         self.tf_matrix = defaultdict(lambda: defaultdict(float))
         self.soundex_index = defaultdict(set)
+        self.preprocessed_docs = {}  # Cache for preprocessed documents
 
         # Text processing tools
         self.stop_words = set(stopwords.words('english'))
-        self.stemmer = PorterStemmer()
+        self.lemmatizer = WordNetLemmatizer()
+        self.preserved_chars = {'+', '@', '.', '-'}  # Characters to preserve during preprocessing
 
         # Initialize indices
         self._preprocess_documents()
 
     def _preprocess_text(self, text: str) -> List[str]:
-        """Preprocess text by tokenizing, removing stopwords, and stemming."""
+        """Preprocess text by tokenizing, removing stopwords, and lemmatizing, while preserving specific non-alphanumeric characters."""
+        if text in self.preprocessed_docs:
+            return self.preprocessed_docs[text]
+
         tokens = word_tokenize(text.lower())
-        return [
-            self.stemmer.stem(token)
+        preprocessed_tokens = [
+            self.lemmatizer.lemmatize(token)
             for token in tokens
-            if token.isalnum() and token not in self.stop_words
+            if any(c.isalnum() or c in self.preserved_chars for c in token) and token not in self.stop_words
         ]
+        self.preprocessed_docs[text] = preprocessed_tokens
+        return preprocessed_tokens
 
     def _preprocess_documents(self):
         """Process the built-in document collection and build indices."""
@@ -129,39 +154,113 @@ class MiniSearchEngine:
 
                 # Build soundex index
                 soundex = improved_soundex(token)
-                self.soundex_index[soundex].add(token)
+                self.soundex_index[soundex].add(doc_id)  # Map Soundex code to doc_id
 
-    def search(self, query: str) -> Tuple[Set[str], Dict[str, float]]:
-        """Perform search for exact phrase or AND logic."""
-        exact_match = query.startswith('"') and query.endswith('"')
-        if exact_match:
+    def wildcard_search(self, pattern: str) -> Set[str]:
+        """Search for documents containing tokens matching the wildcard pattern."""
+        regex = re.compile(pattern.replace('*', '.*'))
+        matching_tokens = [token for token in self.inverted_index if regex.match(token)]
+        matching_docs = set.union(*[self.inverted_index[token] for token in matching_tokens])
+        return matching_docs
+
+    def search(self, query: str) -> Tuple[Set[str], Dict[str, float], List[str]]:
+        """Perform search for exact phrase, AND logic, OR logic, NOT logic, or wildcard search."""
+        # Correct spelling
+        corrected_query = correct_spelling(query)
+        if corrected_query != query:
+            print(f"Did you mean: {corrected_query}?")
+
+        # Handle wildcard search
+        if '*' in query:
+            matching_docs = self.wildcard_search(query)
+            query_tokens = [query]
+        # Handle exact phrase search
+        elif query.startswith('"') and query.endswith('"'):
             query = query[1:-1].lower()
             matching_docs = {
                 doc_id for doc_id, content in self.documents.items()
                 if query in content.lower()
             }
-            query_tokens = [query]  # Treat the whole phrase as a single "token" for scoring
+            query_tokens = [query]
         else:
-            query_tokens = self._preprocess_text(query)
-            matching_docs = set.intersection(*[
-                self.inverted_index[token] for token in query_tokens if token in self.inverted_index
-            ])
+            # Handle OR logic
+            if ' OR ' in query:
+                query_tokens = [self._preprocess_text(q) for q in query.split(' OR ')]
+                matching_docs = set.union(*[
+                    set.union(*[self.inverted_index[token] for token in tokens if token in self.inverted_index])
+                    for tokens in query_tokens
+                ])
+            # Handle NOT logic
+            elif ' NOT ' in query:
+                positive, negative = query.split(' NOT ')
+                positive_tokens = self._preprocess_text(positive)
+                negative_tokens = self._preprocess_text(negative)
+                matching_docs = set.intersection(*[
+                    self.inverted_index[token] for token in positive_tokens if token in self.inverted_index
+                ]) - set.union(*[
+                    self.inverted_index[token] for token in negative_tokens if token in self.inverted_index
+                ])
+            # Default AND logic
+            else:
+                query_tokens = self._preprocess_text(query)
+                print(f"Query Tokens: {query_tokens}")  # Debug: Print query tokens
+                # Get the sets of documents for each token
+                doc_sets = [self.inverted_index[token] for token in query_tokens if token in self.inverted_index]
+                # Perform intersection only if there are sets to intersect
+                if doc_sets:
+                    matching_docs = set.intersection(*doc_sets)
+                else:
+                    # Fallback to Soundex-based matching if no exact matches are found
+                    soundex_codes = [improved_soundex(token) for token in query_tokens]
+                    print(f"Query Soundex Codes: {soundex_codes}")  # Debug: Print query Soundex codes
+                    soundex_docs = set.union(*[
+                        fuzzy_soundex_match(code, self.soundex_index, similarity_threshold=0.8) for code in soundex_codes
+                    ])
+                    print(f"Soundex Matches: {soundex_docs}")  # Debug: Print Soundex matches
+                    # Filter documents to ensure they contain at least one of the query tokens
+                    matching_docs = soundex_docs  # Remove strict token filtering
 
         relevance_scores = {
             doc_id: self.calculate_relevance_score(doc_id, query_tokens)
             for doc_id in matching_docs
         }
-        return matching_docs, relevance_scores
+        return matching_docs, relevance_scores, query_tokens
 
     def calculate_relevance_score(self, doc_id: str, query_tokens: List[str]) -> float:
-        """Calculate relevance score for a document given query tokens."""
+        """Calculate relevance score for a document given query tokens using BM25 and Soundex similarity."""
         score = 0
         doc_text = self._preprocess_text(self.documents[doc_id])
+        total_docs = len(self.documents)
+        avg_doc_length = sum(self.doc_lengths.values()) / total_docs
+        k1 = 1.5
+        b = 0.75
 
         for token in query_tokens:
             term_freq = doc_text.count(token)
             if term_freq > 0:
-                score += term_freq * (1 + log10(term_freq))
+                # BM25 scoring for exact matches
+                doc_freq = len(self.inverted_index[token])
+                idf = log10((total_docs - doc_freq + 0.5) / (doc_freq + 0.5))
+                numerator = term_freq * (k1 + 1)
+                denominator = term_freq + k1 * (1 - b + b * (self.doc_lengths[doc_id] / avg_doc_length))
+                score += idf * (numerator / denominator)
+            else:
+                # Soundex-based scoring for approximate matches
+                soundex = improved_soundex(token)
+                if soundex in self.soundex_index and doc_id in self.soundex_index[soundex]:
+                    # Find the most similar token in the document
+                    max_similarity = max(
+                        SequenceMatcher(None, token, doc_token).ratio()
+                        for doc_token in doc_text
+                    )
+                    # Add a score proportional to the similarity and term frequency
+                    matched_token = next(
+                        doc_token for doc_token in doc_text
+                        if SequenceMatcher(None, token, doc_token).ratio() == max_similarity
+                    )
+                    term_freq = doc_text.count(matched_token)
+                    score += max_similarity * term_freq * 0.5  # Adjust weight as needed
+
         return score
 
     def evaluate_metrics(self, retrieved_docs: Set[str], relevant_docs: Set[str]) -> Dict[str, float]:
@@ -183,23 +282,36 @@ class MiniSearchEngine:
             "F1-Score": f1_score
         }
 
+    def extract_key_phrase(self, doc_id: str, query_tokens: List[str]) -> str:
+        """Extract the key phrase from the document that matches the query tokens."""
+        content = self.documents[doc_id]
+        for token in query_tokens:
+            # Find the first occurrence of the token in the document
+            if token.lower() in content.lower():
+                return token.upper()  # Return the token in uppercase
+        return ""
+
     def run(self):
         """Run the search engine."""
         while True:
             clear_screen()
             print("Welcome to the Mini Search Engine")
             print("Enter your search query (or 0 to exit):")
-            query = input("Query: ").strip()
+            query = input("Search: ").strip()
             if query == "0":
                 print("Exiting...")
                 break
 
-            matching_docs, relevance_scores = self.search(query)
+            matching_docs, relevance_scores, query_tokens = self.search(query)
             relevant_docs = set(self.documents.keys())  # Assume all documents are relevant for simplicity
 
             print("\nSearch Results:")
-            for doc_id in matching_docs:
-                print(f"{doc_id}: {self.documents[doc_id]} (Score: {relevance_scores[doc_id]:.2f})")
+            if matching_docs:
+                for doc_id in sorted(matching_docs, key=lambda x: relevance_scores[x], reverse=True):
+                    key_phrase = self.extract_key_phrase(doc_id, query_tokens)
+                    print(f"{doc_id}: {key_phrase} ==> Score: {relevance_scores[doc_id]:.2f}")
+            else:
+                print("No results found.")
 
             metrics = self.evaluate_metrics(matching_docs, relevant_docs)
             print("\nEvaluation Metrics:")
