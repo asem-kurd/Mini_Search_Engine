@@ -18,7 +18,13 @@ nltk.download('wordnet')
 # Initialize SymSpell for spell correction
 sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
 dictionary_path = "frequency_dictionary_en_82_765.txt"  # Path to the dictionary file
-sym_spell.load_dictionary(dictionary_path, term_index=0, count_index=1)
+
+# Load dictionary file with error handling
+try:
+    sym_spell.load_dictionary(dictionary_path, term_index=0, count_index=1)
+except FileNotFoundError:
+    print(f"Dictionary file '{dictionary_path}' not found. Spell correction will be disabled.")
+    sym_spell = None
 
 def clear_screen():
     """Clear the terminal screen."""
@@ -26,6 +32,8 @@ def clear_screen():
 
 def correct_spelling(query: str) -> str:
     """Correct spelling errors in the query using SymSpell."""
+    if sym_spell is None:
+        return query
     suggestions = sym_spell.lookup_compound(query, max_edit_distance=2)
     return suggestions[0].term if suggestions else query
 
@@ -36,8 +44,10 @@ def improved_soundex(token: str) -> str:
     if not token:
         return "0000"
 
-    # Convert to uppercase
-    token = token.upper()
+    # Convert to uppercase and filter non-alphabetic characters
+    token = ''.join([char.upper() for char in token if char.isalpha()])
+    if not token:
+        return "0000"
 
     # Soundex mapping
     soundex_mapping = {
@@ -59,9 +69,6 @@ def improved_soundex(token: str) -> str:
             # Avoid adding the same code consecutively
             if code != soundex_code[-1]:
                 soundex_code += code
-
-    # Remove vowels and other non-mapped characters
-    soundex_code = soundex_code[0] + ''.join([c for c in soundex_code[1:] if c in '0123456789'])
 
     # Pad with zeros and truncate to 4 characters
     soundex_code = soundex_code.ljust(4, '0')[:4]
@@ -92,7 +99,7 @@ class MiniSearchEngine:
             "doc7": "Lion Tiger Tiger Tiger Lion tiger vs tiger lion Is the president",
             "doc8": "ASEM MOHAMMAD ZAID amz ZaId",
             "doc9": "ZaId zaId ZAID zaiD",
-            "doc10": "Lion Tigers vs tiger lion Is the presidents Lion Tiger Tiger Tiger Lion lions ",
+            "doc10": "Lion Tigers vs tiger lion Is the presidents Lion Tiger Tiger Tiger Lion ",
             "doc11": "Information retrieval is the process of finding relevant information from a large repository, such as a database, library, or the internet. It plays a critical role in search engines, enabling users to retrieve documents that match their queries. Techniques like keyword matching, natural language processing, and ranking algorithms are central to information retrieval systems. As data continues to grow exponentially, the field faces challenges in handling vast datasets efficiently while maintaining high accuracy and speed in query responses.",
             "doc12": "HEllo world",
             "doc13": "Machine learning, a subset of artificial intelligence, enables systems to learn from data and improve their performance over time without explicit programming. This technology underpins many modern applications, such as spam filtering, facial recognition, and predictive maintenance. Machine learning models can be classified into supervised, unsupervised, and reinforcement learning. Despite its advancements, challenges like data bias and interpretability remain areas of active research, as they impact the fairness and transparency of machine learning systems.",
