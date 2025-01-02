@@ -181,51 +181,34 @@ class MiniSearchEngine:
         if '*' in query:
             matching_docs = self.wildcard_search(query)
             query_tokens = [query]
-        # Handle exact phrase search
+        # Handle exact phrase search (words in exact order)
         elif query.startswith('"') and query.endswith('"'):
             query = query[1:-1].lower()
-            matching_docs = {
-                doc_id for doc_id, content in self.documents.items()
-                if query in content.lower()
-            }
-            query_tokens = [query]
+            query_tokens = self._preprocess_text(query)
+            matching_docs = set()
+            for doc_id, content in self.documents.items():
+                # Check if the exact phrase exists in the document
+                if query in content.lower():
+                    matching_docs.add(doc_id)
+        # Handle AND logic search (words in any order but all must exist)
         else:
-            # Handle OR logic
-            if ' OR ' in query:
-                query_tokens = [self._preprocess_text(q) for q in query.split(' OR ')]
-                matching_docs = set.union(*[
-                    set.union(*[self.inverted_index[token] for token in tokens if token in self.inverted_index])
-                    for tokens in query_tokens
-                ])
-            # Handle NOT logic
-            elif ' NOT ' in query:
-                positive, negative = query.split(' NOT ')
-                positive_tokens = self._preprocess_text(positive)
-                negative_tokens = self._preprocess_text(negative)
-                matching_docs = set.intersection(*[
-                    self.inverted_index[token] for token in positive_tokens if token in self.inverted_index
-                ]) - set.union(*[
-                    self.inverted_index[token] for token in negative_tokens if token in self.inverted_index
-                ])
-            # Default AND logic
+            query_tokens = self._preprocess_text(query)
+            print(f"Query Tokens: {query_tokens}")  # Debug: Print query tokens
+            # Get the sets of documents for each token
+            doc_sets = [self.inverted_index[token] for token in query_tokens if token in self.inverted_index]
+            # Perform intersection only if there are sets to intersect
+            if doc_sets:
+                matching_docs = set.intersection(*doc_sets)
             else:
-                query_tokens = self._preprocess_text(query)
-                print(f"Query Tokens: {query_tokens}")  # Debug: Print query tokens
-                # Get the sets of documents for each token
-                doc_sets = [self.inverted_index[token] for token in query_tokens if token in self.inverted_index]
-                # Perform intersection only if there are sets to intersect
-                if doc_sets:
-                    matching_docs = set.intersection(*doc_sets)
-                else:
-                    # Fallback to Soundex-based matching if no exact matches are found
-                    soundex_codes = [improved_soundex(token) for token in query_tokens]
-                    print(f"Query Soundex Codes: {soundex_codes}")  # Debug: Print query Soundex codes
-                    soundex_docs = set.union(*[
-                        fuzzy_soundex_match(code, self.soundex_index, similarity_threshold=0.8) for code in soundex_codes
-                    ])
-                    print(f"Soundex Matches: {soundex_docs}")  # Debug: Print Soundex matches
-                    # Filter documents to ensure they contain at least one of the query tokens
-                    matching_docs = soundex_docs  # Remove strict token filtering
+                # Fallback to Soundex-based matching if no exact matches are found
+                soundex_codes = [improved_soundex(token) for token in query_tokens]
+                print(f"Query Soundex Codes: {soundex_codes}")  # Debug: Print query Soundex codes
+                soundex_docs = set.union(*[
+                    fuzzy_soundex_match(code, self.soundex_index, similarity_threshold=0.8) for code in soundex_codes
+                ])
+                print(f"Soundex Matches: {soundex_docs}")  # Debug: Print Soundex matches
+                # Filter documents to ensure they contain at least one of the query tokens
+                matching_docs = soundex_docs  # Remove strict token filtering
 
         relevance_scores = {
             doc_id: self.calculate_relevance_score(doc_id, query_tokens)
